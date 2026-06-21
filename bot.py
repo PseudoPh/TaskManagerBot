@@ -25,9 +25,9 @@ GROUP_ID = -1003466396737
 # ⬇️ БЕЛЫЙ СПИСОК по username (без @, в нижнем регистре)
 ALLOWED_USERNAMES = {
     "pseudo_raf",
-    "AnastasiKurey",
-    "Byblefares",
-    "MsPeregrin",
+    "anastasikurey",
+    "byblefares",
+    "msperegrin",
     "d_obushko",
 }
 
