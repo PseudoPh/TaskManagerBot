@@ -18,7 +18,7 @@ if sys.platform == "win32":
 TOKEN = "8946706996:AAECoDtaevF4fIKgUH0_2f1u4LktgRySiLs"
 
 # ⬇️ ВСТАВЬТE СЮДА ID ВАШЕЙ ГРУППЫ (узнайте командой /chatid)
-GROUP_ID = -1001234567890  # ← ЗАМЕНИТЕ на ID вашей группы
+GROUP_ID = -1003466396737  # ← ЗАМЕНИТЕ на ID вашей группы
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
