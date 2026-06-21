@@ -1,15 +1,17 @@
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import (
-    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
+    TelegramObject
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from typing import Callable, Dict, Any, Awaitable
 import sys
 
 if sys.platform == "win32":
@@ -17,12 +19,64 @@ if sys.platform == "win32":
 
 TOKEN = "8946706996:AAECoDtaevF4fIKgUH0_2f1u4LktgRySiLs"
 
-# ⬇️ ВСТАВЬТE СЮДА ID ВАШЕЙ ГРУППЫ (узнайте командой /chatid)
-GROUP_ID = -1003466396737  # ← ЗАМЕНИТЕ на ID вашей группы
+# ⬇️ ID ВАШЕЙ ГРУППЫ
+GROUP_ID = -1003466396737
+
+# ⬇️ БЕЛЫЙ СПИСОК по username (без @, в нижнем регистре)
+ALLOWED_USERNAMES = {
+    "pseudo_raf",
+    "AnastasiKurey",
+    "Byblefares",
+    "MsPeregrin",
+    "d_obushko",
+}
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
+
+
+# --- Проверка по белому списку username ---
+def is_allowed(username: str | None) -> bool:
+    if not username:
+        return False
+    return username.lower() in ALLOWED_USERNAMES
+
+
+# --- Middleware: блокирует всех, кого нет в белом списке ---
+class AllowedUsersMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        user = None
+        if getattr(event, "message", None):
+            user = event.message.from_user
+        elif getattr(event, "callback_query", None):
+            user = event.callback_query.from_user
+
+        if user is not None and not is_allowed(user.username):
+            uname = f"@{user.username}" if user.username else "без username"
+            print(f"⛔ Отказано: {user.full_name} ({uname}), ID: {user.id}")
+
+            if getattr(event, "message", None):
+                if not user.username:
+                    await event.message.answer(
+                        "⛔ У вас не установлен @username в Telegram.\n"
+                        "Задайте его в Настройках и попробуйте снова."
+                    )
+                else:
+                    await event.message.answer("⛔ У вас нет доступа к этому боту.")
+            elif getattr(event, "callback_query", None):
+                await event.callback_query.answer(
+                    "⛔ У вас нет доступа.", show_alert=True
+                )
+            return
+
+        return await handler(event, data)
+
 
 # --- База данных ---
 conn = sqlite3.connect("tasks.db", check_same_thread=False)
@@ -63,7 +117,7 @@ class NewTask(StatesGroup):
     deadline = State()
 
 
-# --- Узнать ID чата (временная команда, можно удалить после настройки) ---
+# --- Узнать ID чата (временная команда) ---
 @dp.message(Command("chatid"))
 async def chat_id(message: Message):
     await message.answer(f"ID этого чата: `{message.chat.id}`", parse_mode="Markdown")
@@ -72,6 +126,9 @@ async def chat_id(message: Message):
 # --- Регистрация пользователя ---
 @dp.message(Command("start"))
 async def start(message: Message):
+    uname = f"@{message.from_user.username}" if message.from_user.username else "—"
+    print(f"✅ /start: {message.from_user.full_name} ({uname}), ID: {message.from_user.id}")
+
     cur.execute(
         "INSERT OR REPLACE INTO users (user_id, name) VALUES (?, ?)",
         (message.from_user.id, message.from_user.full_name)
@@ -185,7 +242,6 @@ async def save_task(message: Message, state: FSMContext):
     task_id = cur.lastrowid
     await state.clear()
 
-    # Имя исполнителя
     cur.execute("SELECT name FROM users WHERE user_id=?", (data["assignee_id"],))
     assignee_name = cur.fetchone()[0]
 
@@ -195,7 +251,6 @@ async def save_task(message: Message, state: FSMContext):
         f"👤 Исполнитель: {assignee_name}{deadline_text}"
     )
 
-    # Уведомление исполнителю
     try:
         await bot.send_message(
             data["assignee_id"],
@@ -205,7 +260,6 @@ async def save_task(message: Message, state: FSMContext):
     except Exception:
         pass
 
-    # Планируем напоминания
     if deadline:
         schedule_reminders(task_id, data["assignee_id"], data["text"], dt)
 
@@ -213,13 +267,11 @@ async def save_task(message: Message, state: FSMContext):
 # --- Планирование напоминаний ---
 def schedule_reminders(task_id, assignee_id, text, deadline_dt):
     now = datetime.now()
-
     reminders = [
         (deadline_dt - timedelta(days=1), "⏰ Напоминание: до дедлайна остался 1 день!"),
         (deadline_dt - timedelta(hours=1), "⏰ Напоминание: до дедлайна остался 1 час!"),
         (deadline_dt, "🔴 Дедлайн наступил!"),
     ]
-
     for remind_time, msg in reminders:
         if remind_time > now:
             scheduler.add_job(
@@ -233,12 +285,10 @@ def schedule_reminders(task_id, assignee_id, text, deadline_dt):
 
 
 async def send_reminder(task_id, assignee_id, text, msg):
-    # Проверяем, не выполнена ли задача
     cur.execute("SELECT status FROM tasks WHERE id=?", (task_id,))
     row = cur.fetchone()
     if not row or row[0] == "done":
-        return  # задача уже выполнена — не напоминаем
-
+        return
     try:
         await bot.send_message(
             assignee_id,
@@ -312,7 +362,6 @@ async def task_done(callback: CallbackQuery):
     conn.commit()
     await callback.message.edit_text(f"✅ Задача #{task_id} выполнена!")
 
-    # Уведомление всем
     cur.execute("SELECT user_id FROM users")
     for (user_id,) in cur.fetchall():
         try:
@@ -326,6 +375,7 @@ async def task_done(callback: CallbackQuery):
 
 
 async def main():
+    dp.update.middleware(AllowedUsersMiddleware())
     scheduler.start()
     await dp.start_polling(bot)
 
