@@ -16,6 +16,10 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 TOKEN = "8946706996:AAECoDtaevF4fIKgUH0_2f1u4LktgRySiLs"
+
+# ⬇️ ВСТАВЬТE СЮДА ID ВАШЕЙ ГРУППЫ (узнайте командой /chatid)
+GROUP_ID = -1001234567890  # ← ЗАМЕНИТЕ на ID вашей группы
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
@@ -43,11 +47,26 @@ CREATE TABLE IF NOT EXISTS users (
 conn.commit()
 
 
+# --- Проверка: участник ли группы ---
+async def is_team_member(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(GROUP_ID, user_id)
+        return member.status in ("creator", "administrator", "member")
+    except Exception:
+        return False
+
+
 # --- Состояния для пошагового создания задачи ---
 class NewTask(StatesGroup):
     text = State()
     assignee = State()
     deadline = State()
+
+
+# --- Узнать ID чата (временная команда, можно удалить после настройки) ---
+@dp.message(Command("chatid"))
+async def chat_id(message: Message):
+    await message.answer(f"ID этого чата: `{message.chat.id}`", parse_mode="Markdown")
 
 
 # --- Регистрация пользователя ---
@@ -71,6 +90,10 @@ async def start(message: Message):
 # --- Список участников ---
 @dp.message(Command("team"))
 async def team(message: Message):
+    if not await is_team_member(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников команды.")
+        return
+
     cur.execute("SELECT name FROM users")
     rows = cur.fetchall()
     if not rows:
@@ -83,6 +106,10 @@ async def team(message: Message):
 # --- Шаг 1: текст задачи ---
 @dp.message(Command("new"))
 async def new_task(message: Message, state: FSMContext):
+    if not await is_team_member(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников команды.")
+        return
+
     await message.answer("✍️ Напишите текст задачи:")
     await state.set_state(NewTask.text)
 
@@ -131,6 +158,7 @@ async def choose_deadline(callback: CallbackQuery, state: FSMContext):
 async def save_task(message: Message, state: FSMContext):
     data = await state.get_data()
     deadline = None
+    dt = None
 
     if message.text.strip().lower() != "нет":
         try:
@@ -223,6 +251,10 @@ async def send_reminder(task_id, assignee_id, text, msg):
 # --- Список всех активных задач ---
 @dp.message(Command("tasks"))
 async def list_tasks(message: Message):
+    if not await is_team_member(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников команды.")
+        return
+
     cur.execute("""
         SELECT t.id, t.text, t.deadline, u.name
         FROM tasks t LEFT JOIN users u ON t.assignee_id = u.user_id
@@ -247,6 +279,10 @@ async def list_tasks(message: Message):
 # --- Мои задачи ---
 @dp.message(Command("my"))
 async def my_tasks(message: Message):
+    if not await is_team_member(message.from_user.id):
+        await message.answer("⛔ Доступ только для участников команды.")
+        return
+
     cur.execute(
         "SELECT id, text, deadline FROM tasks WHERE assignee_id=? AND status='open'",
         (message.from_user.id,)
@@ -267,6 +303,10 @@ async def my_tasks(message: Message):
 # --- Отметка выполнения ---
 @dp.callback_query(F.data.startswith("done_"))
 async def task_done(callback: CallbackQuery):
+    if not await is_team_member(callback.from_user.id):
+        await callback.answer("⛔ Доступ только для участников команды.", show_alert=True)
+        return
+
     task_id = int(callback.data.split("_")[1])
     cur.execute("UPDATE tasks SET status='done' WHERE id=?", (task_id,))
     conn.commit()
